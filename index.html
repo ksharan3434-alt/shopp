@@ -194,8 +194,11 @@
   .success-icon{width:58px; height:58px; border-radius:50%; background:linear-gradient(135deg,var(--emerald),var(--sapphire)); display:flex; align-items:center; justify-content:center; font-size:28px; color:#fff; box-shadow:0 0 30px rgba(14,138,92,.4);}
   .status-pill{font-family:'IBM Plex Mono',monospace; font-size:10.5px; padding:4px 11px; border-radius:20px; text-transform:uppercase;}
   .status-pending{background:rgba(201,117,43,.14); color:#A05A1E;}
+  .status-paid{background:rgba(43,79,168,.14); color:#2B4FA8;}
   .status-delivered{background:rgba(18,138,97,.14); color:#0E7A54;}
   .status-cancelled{background:rgba(212,43,92,.14); color:#B01F4E;}
+
+  .verify-timer-box{background:var(--card-2); border:1px solid var(--line); border-radius:12px; padding:14px; margin:6px 0;}
 
   /* ---------- My orders ---------- */
   .order-card{background:var(--card); backdrop-filter:blur(var(--glass-blur)) saturate(160%); -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(160%); border:1px solid var(--line); border-radius:13px; padding:15px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;}
@@ -266,6 +269,7 @@
     </div>
     <div style="display:flex; align-items:center; gap:12px;">
       <a href="#/orders" class="myorders-link">My Orders</a>
+      <a href="ebooks.html" class="myorders-link">📚 My E-Books</a>
       <button class="cart-btn" data-action="open-cart">
         🛒 <span>Cart</span>
         <span id="cart-badge" class="badge hidden">0</span>
@@ -328,6 +332,14 @@ const db = getFirestore(fbApp);
 /* CHANGE THIS PASSWORD before going live! */
 const ADMIN_PASSWORD = "ScienceWorld@2026";
 const COACHING_PHONE = "7654137037";
+/* WhatsApp support number (wa.me format, country code + number, no + or spaces) */
+const WHATSAPP_NUMBER = "917654137037";
+function whatsappLink(msg){ return 'https://wa.me/'+WHATSAPP_NUMBER+(msg?('?text='+encodeURIComponent(msg)):''); }
+/* UPI VPA jispe payment aayega. "7654137037@upi" ek default guess hai —
+   apne UPI app (GPay/PhonePe/Paytm) mein jaakar apna asli UPI ID check karke yahan daalo,
+   warna kuch devices/apps par payment link open nahi hoga. */
+const UPI_ID = "7654137037@upi";
+const UPI_PAYEE_NAME = "Science World";
 
 /* =========================================================
    STATE
@@ -348,6 +360,7 @@ const state = {
   checkoutType: null, // 'purchase' | 'registration'
   appliedCoupon: null,
   adminTab: 'dashboard',
+  extraFee: 0,
 };
 
 const CATEGORY_META_DEFAULT_COLOR = "#1D3E6E";
@@ -496,6 +509,11 @@ function listenCoupons(){
     if(state.route === '#/admin') render();
   });
 }
+
+onSnapshot(doc(db,'settings','general'), snap=>{
+  state.extraFee = (snap.exists() && Number(snap.data().extraFee)) || 0;
+  render();
+}, err=>{ console.error('settings error', err); });
 
 /* =========================================================
    ROUTER
@@ -736,7 +754,7 @@ function renderCheckout(){
 
   const subtotal = cartTotal();
   const discAmt = state.appliedCoupon ? computeDiscount(state.appliedCoupon, subtotal) : 0;
-  const final = Math.max(0, subtotal - discAmt);
+  const final = Math.max(0, subtotal - discAmt) + (state.extraFee||0);
 
   return `
     <div class="checkout-wrap">
@@ -778,7 +796,65 @@ function computeDiscount(coupon, subtotal){
   return Math.min(coupon.value, subtotal);
 }
 
+/* Places the order(s) in Firestore for the current cart.
+   status: 'pending' (awaiting admin verification) or 'paid' (self-reported via UTR).
+   Returns true on success, false on validation failure or error (toast already shown). */
+async function placeOrder(form, {status='pending', utr=null} = {}){
+  const fd = new FormData(form);
+  const phone = fd.get('phone');
+  if(!/^\d{10}$/.test(phone)){ toast('Phone number 10 digit hona chahiye'); return false; }
+  const studentDetails = {
+    name: fd.get('name'), branch: fd.get('branch'), className: fd.get('className'),
+    batch: fd.get('batch'), phone, email: fd.get('email'),
+  };
+  const items = Object.keys(state.cart).map(id=>({p: state.products.find(x=>x.id===id), qty: state.cart[id]})).filter(x=>x.p);
+  if(items.length===0){ toast('Cart khaali hai'); return false; }
+  const subtotal = cartTotal();
+  const discAmt = state.appliedCoupon ? computeDiscount(state.appliedCoupon, subtotal) : 0;
+  const final = Math.max(0, subtotal - discAmt) + (state.extraFee||0);
+  const paymentMethod = form.pay.value;
+  const outOfStockItem = items.find(({p,qty})=> !inStock(p) || (p.quantity!=null && qty>p.quantity));
+  if(outOfStockItem){
+    toast(`${outOfStockItem.p.name} ab available nahi hai ya itni quantity nahi bachi. Cart update kar lo.`);
+    delete state.cart[outOfStockItem.p.id]; saveCart(); render();
+    return false;
+  }
+  try{
+    for(const {p,qty} of items){
+      /* Free e-books (price ₹0) skip admin verification / timer entirely and unlock instantly. */
+      const isFreeEbook = !!p.isEbook && Number(p.price)===0;
+      const itemStatus = isFreeEbook ? 'delivered' : status;
+      const itemUtr = isFreeEbook ? null : (utr || null);
+      await addDoc(collection(db,'orders'), {
+        type:'purchase', uid: state.uid,
+        productId: p.id, productName: p.name, productImage: (p.images&&p.images[0])||'',
+        mrp: p.mrp, price: p.price*qty, qty,
+        isEbook: !!p.isEbook, ebookLink: p.ebookLink || null,
+        ebookExpiresAt: null, autoDelivered: isFreeEbook,
+        ...studentDetails,
+        couponCode: state.appliedCoupon ? state.appliedCoupon.id : null,
+        discountAmount: items.length ? Math.round(discAmt/items.length) : 0,
+        extraFee: items.length ? Math.round((state.extraFee||0)/items.length) : 0,
+        finalPrice: items.length===1 ? final : Math.round((p.price*qty) - (discAmt * (p.price*qty/subtotal)) + ((state.extraFee||0)/items.length)),
+        paymentMethod, status: itemStatus, utr: itemUtr, createdAt: serverTimestamp(),
+      });
+      if(p.quantity!=null){
+        await updateDoc(doc(db,'products', p.id), {quantity: increment(-qty)});
+      }
+    }
+    if(state.appliedCoupon){
+      await updateDoc(doc(db,'coupons', state.appliedCoupon.id), {usedCount: increment(1)});
+    }
+    state.cart = {}; saveCart(); state.appliedCoupon=null;
+    return true;
+  }catch(err){
+    console.error(err); toast('Order failed, try again');
+    return false;
+  }
+}
+
 function renderPurchaseFlow(subtotal, discAmt, final){
+  const extraFee = state.extraFee||0;
   return `
     <form data-form="purchase" style="display:flex; flex-direction:column; gap:4px;">
       <div class="form-grid">
@@ -800,7 +876,7 @@ function renderPurchaseFlow(subtotal, discAmt, final){
       </div>
 
       <div class="field">
-        <label>Coupon code <span style="color:var(--red); font-weight:600;">(UPI payment ke liye zaroori)</span></label>
+        <label>Coupon code <span style="color:var(--ink-soft); font-weight:500;">(optional)</span></label>
         <div class="coupon-row">
           <input type="text" id="coupon-input" placeholder="e.g. WELCOME10" value="${state.appliedCoupon?state.appliedCoupon.id:''}" ${state.appliedCoupon?'disabled':''} />
           ${state.appliedCoupon
@@ -820,13 +896,31 @@ function renderPurchaseFlow(subtotal, discAmt, final){
       <div class="co-summary" style="margin-top:6px;">
         <div class="co-summary-row"><span>Subtotal</span><span class="mono">${fmt(subtotal)}</span></div>
         ${discAmt>0 ? `<div class="co-summary-row" style="color:var(--green);"><span>Discount</span><span class="mono">− ${fmt(discAmt)}</span></div>` : ''}
+        ${extraFee>0 ? `<div class="co-summary-row"><span>Convenience Fee</span><span class="mono">+ ${fmt(extraFee)}</span></div>` : ''}
         <div class="co-summary-row" style="font-weight:700; font-size:15px; border-top:1px solid var(--line); margin-top:6px; padding-top:6px;">
           <span>Total Payable</span><span class="mono">${fmt(final)}</span>
         </div>
       </div>
 
-      <button type="submit" class="btn btn-green" style="margin-top:10px;">Confirm Purchase</button>
+      <button type="submit" id="main-confirm-btn" class="btn btn-green" style="margin-top:10px; display:none;">Confirm Purchase</button>
+
+      ${final<=0 ? `
+      <div class="field" style="margin-top:10px;">
+        <button type="button" class="btn btn-green" data-action="confirm-free-order" style="width:100%; padding:13px; font-size:14.5px;">🎁 Get Order — FREE</button>
+        <p style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Payable amount ₹0 hai — koi payment ki zaroorat nahi, order turant confirm ho jayega.</p>
+      </div>
+      ` : `
+      <div id="upi-pay-block" style="margin-top:10px;">
+        <div class="field">
+          <button type="button" class="btn" data-action="pay-upi" style="background:linear-gradient(135deg,#5F259F,#8B5CF6); color:#fff; display:flex; align-items:center; justify-content:center; gap:8px; font-size:14.5px; padding:13px;">
+            <span>📲 Pay ${fmt(final)} via UPI</span>
+          </button>
+          <p style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Button dabate hi tumhara phone UPI app chunne ko kahega (GPay / PhonePe / Paytm etc.) — usse ${fmt(final)} pay kar do. Wapas aate hi order confirm ho jayega, admin usko verify karega.</p>
+        </div>
+      </div>
+      `}
     </form>
+
   `;
 }
 
@@ -858,18 +952,124 @@ function renderMyOrders(){
   return `<div class="section-wrap">
     <h2 class="disp" style="margin-bottom:14px;">My Orders</h2>
     ${state.myOrders.map(o=>`
-      <div class="order-card">
+      <div class="order-card" data-action="open-order-detail" data-id="${o.id}" style="cursor:pointer;">
         <div class="oc-left">
           <p>${esc(o.productName||'')}</p>
-          <small>${o.type==='purchase' ? fmt(o.finalPrice) + ' · ' + esc(o.paymentMethod||'') : 'Registration · ' + esc(o.branch||'')}</small>
+          <small>${o.type==='purchase' ? fmt(o.finalPrice) + ' · ' + esc(o.paymentMethod||'') + (o.utr?' · UTR: '+esc(o.utr):'') : 'Registration · ' + esc(o.branch||'')}</small>
+          ${o.type==='purchase' && o.isEbook && o.status==='delivered' ? `
+            <small class="ebook-added-note" data-action="open-order-detail" data-id="${o.id}" style="color:var(--emerald); font-weight:600; cursor:pointer; margin-top:2px;">🎉 It is added to your E-Book section — find it there</small>
+          ` : ''}
         </div>
         <div>
           ${o.type==='purchase'
-            ? `<span class="status-pill ${o.status==='delivered'?'status-delivered':o.status==='cancelled'?'status-cancelled':'status-pending'}">${o.status==='delivered'?'Delivered':o.status==='cancelled'?'Cancelled':'Pending'}</span>`
+            ? `<span class="status-pill ${o.status==='delivered'?'status-delivered':o.status==='cancelled'?'status-cancelled':o.status==='paid'?'status-paid':'status-pending'}">${o.status==='delivered'?'Delivered':o.status==='cancelled'?'Cancelled':o.status==='paid'?'Paid':'Pending'}</span>`
             : `<span class="status-pill status-delivered">Registered</span>`}
         </div>
       </div>
     `).join('')}
+  </div>`;
+}
+
+/* Order detail modal — shows a live verification timer for pending orders,
+   an urgent-call link, and (for delivered e-books) the e-book unlock note + WhatsApp support. */
+function openOrderDetailModal(orderId){
+  const o = state.myOrders.find(x=>x.id===orderId);
+  if(!o) return;
+  const isPendingPurchase = o.type==='purchase' && (!o.status || o.status==='pending');
+  let timerHtml = '';
+  if(isPendingPurchase){
+    const createdSec = o.createdAt && o.createdAt.seconds ? o.createdAt.seconds : Math.floor(Date.now()/1000);
+    const elapsed = Math.floor(Date.now()/1000) - createdSec;
+    const remaining = Math.max(0, 2*60*60 - elapsed);
+    timerHtml = `
+      <div class="verify-timer-box">
+        <p style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;">Estimated verification time</p>
+        <div id="order-modal-timer" class="mono" style="font-size:28px; font-weight:700; color:var(--gold-deep);">00:00:00</div>
+        <p style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Usually 2 ghante ke andar verify ho jaata hai.</p>
+      </div>
+      <p style="color:var(--ink-soft); font-size:13px; margin-top:10px;">📞 Urgent ho to seedha call karo: <a href="tel:${COACHING_PHONE}" style="color:var(--green); font-weight:600;">${COACHING_PHONE}</a></p>
+    `;
+  }
+  const ebookNote = (o.isEbook && o.status==='delivered') ? `
+    <div class="info-card" style="margin-top:10px;">
+      <span>🎉 <strong>It is added to your E-Book section</strong> — find it there!</span>
+      <span><a href="ebooks.html" class="btn btn-green" style="margin-top:6px; display:inline-block;">📚 Go to My E-Books</a></span>
+    </div>
+  ` : '';
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-overlay" data-action="close-modal">
+      <div class="modal-box" onclick="event.stopPropagation()">
+        <h2 class="disp" style="font-size:19px;">${esc(o.productName||'Order')}</h2>
+        <p style="color:var(--ink-soft); font-size:13px; margin-top:4px;">${o.type==='purchase' ? fmt(o.finalPrice) : 'Registration'}</p>
+        ${timerHtml}
+        ${ebookNote}
+        <button type="button" class="btn btn-outline" style="width:100%; margin-top:14px; display:flex; align-items:center; justify-content:center; gap:6px;" onclick="window.open('${whatsappLink('Hi, I need help with my order: '+ (o.productName||'') )}','_blank')">
+          💬 Support on WhatsApp
+        </button>
+      </div>
+    </div>
+  `;
+  if(isPendingPurchase){
+    startOrderModalTimer(remaining);
+  }
+}
+
+function startOrderModalTimer(totalSeconds){
+  let remaining = totalSeconds;
+  const render_ = ()=>{
+    const el = document.getElementById('order-modal-timer');
+    if(!el) return false;
+    const h = String(Math.floor(remaining/3600)).padStart(2,'0');
+    const m = String(Math.floor((remaining%3600)/60)).padStart(2,'0');
+    const s = String(remaining%60).padStart(2,'0');
+    el.textContent = `${h}:${m}:${s}`;
+    return true;
+  };
+  render_();
+  const iv = setInterval(()=>{
+    remaining--;
+    if(remaining<0) remaining=0;
+    if(!render_()){ clearInterval(iv); return; }
+    if(remaining<=0) clearInterval(iv);
+  }, 1000);
+}
+
+/* =========================================================
+   MY E-BOOKS VIEW
+========================================================= */
+function renderEbooks(){
+  const now = Date.now()/1000;
+  const unlocked = state.myOrders.filter(o=>o.type==='purchase' && o.isEbook && o.status==='delivered' && (!o.ebookExpiresAt || o.ebookExpiresAt > now));
+  const expired = state.myOrders.filter(o=>o.type==='purchase' && o.isEbook && o.status==='delivered' && o.ebookExpiresAt && o.ebookExpiresAt <= now);
+  if(unlocked.length===0 && expired.length===0){
+    return `<div class="section-wrap"><h2 class="disp" style="margin-bottom:14px;">📚 My E-Books</h2>
+      <p style="color:var(--ink-soft); font-size:13px;">Abhi tak koi e-book unlock nahi hui. E-book purchase karke yahan access karo. <a href="#/" class="mono" style="color:var(--green);">Shop now →</a></p>
+    </div>`;
+  }
+  return `<div class="section-wrap">
+    <h2 class="disp" style="margin-bottom:14px;">📚 My E-Books</h2>
+    <div class="product-grid">
+      ${unlocked.map(o=>`
+        <div class="p-card">
+          <div class="p-thumb"><img src="${o.productImage||''}" onerror="this.style.display='none'" /></div>
+          <div class="p-body">
+            <div class="p-title">${esc(o.productName||'')}</div>
+            ${o.ebookExpiresAt ? `<small style="color:var(--ink-soft); font-size:11px;">Access until ${new Date(o.ebookExpiresAt*1000).toLocaleDateString('en-IN')}</small>` : ''}
+            <button type="button" class="btn btn-green" data-action="access-ebook" data-link="${o.ebookLink?esc(o.ebookLink):''}">🔓 Access</button>
+          </div>
+        </div>
+      `).join('')}
+      ${expired.map(o=>`
+        <div class="p-card" style="opacity:.6;">
+          <div class="p-thumb"><img src="${o.productImage||''}" onerror="this.style.display='none'" /></div>
+          <div class="p-body">
+            <div class="p-title">${esc(o.productName||'')}</div>
+            <small style="color:var(--red); font-size:11px;">Access expired</small>
+            <button type="button" class="btn btn-outline" onclick="window.open('${whatsappLink('Hi, my e-book access has expired, please renew: '+ (o.productName||''))}','_blank')">💬 Renew via Support</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
   </div>`;
 }
 
@@ -899,7 +1099,7 @@ function openAdminLoginModal(){
 function renderAdmin(){
   const tabs = [
     ['dashboard','Dashboard'],['categories','Categories'],['products','Products'],
-    ['coupons','Coupons'],['orders','Orders'],
+    ['coupons','Coupons'],['orders','Orders'],['settings','Settings'],
   ];
   return `
     <div class="admin-wrap">
@@ -922,6 +1122,7 @@ function renderAdminTab(){
     case 'products': return renderAdminProducts();
     case 'coupons': return renderAdminCoupons();
     case 'orders': return renderAdminOrders();
+    case 'settings': return renderAdminSettings();
     default: return '';
   }
 }
@@ -929,7 +1130,8 @@ function renderAdminTab(){
 function renderAdminDashboard(){
   const purchases = state.allOrders.filter(o=>o.type==='purchase');
   const regs = state.allOrders.filter(o=>o.type==='registration');
-  const pending = purchases.filter(o=>o.status!=='delivered' && o.status!=='cancelled').length;
+  const pending = purchases.filter(o=>!o.status || o.status==='pending').length;
+  const paid = purchases.filter(o=>o.status==='paid').length;
   const delivered = purchases.filter(o=>o.status==='delivered').length;
   const cancelled = purchases.filter(o=>o.status==='cancelled').length;
   const activeCoupons = state.coupons.filter(c=>c.active).length;
@@ -938,7 +1140,8 @@ function renderAdminDashboard(){
       <div class="stat-card"><div class="num">${state.categories.length}</div><div class="lbl">Categories</div></div>
       <div class="stat-card"><div class="num">${state.products.length}</div><div class="lbl">Products</div></div>
       <div class="stat-card"><div class="num">${purchases.length}</div><div class="lbl">Purchases</div></div>
-      <div class="stat-card"><div class="num">${pending}</div><div class="lbl">Pending Delivery</div></div>
+      <div class="stat-card"><div class="num">${pending}</div><div class="lbl">Pending Verification</div></div>
+      <div class="stat-card"><div class="num">${paid}</div><div class="lbl">Paid</div></div>
       <div class="stat-card"><div class="num">${delivered}</div><div class="lbl">Delivered</div></div>
       <div class="stat-card"><div class="num">${cancelled}</div><div class="lbl">Cancelled</div></div>
       <div class="stat-card"><div class="num">${regs.length}</div><div class="lbl">Registrations</div></div>
@@ -993,7 +1196,7 @@ function renderAdminProducts(){
   return `
     <div class="admin-panel-head"><h3>Products</h3><button class="btn btn-navy" data-action="open-product-form">+ Add Product</button></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Image</th><th>Name</th><th>Category</th><th>MRP</th><th>Price</th><th>Stock</th><th>Images</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Image</th><th>Name</th><th>Category</th><th>Type</th><th>MRP</th><th>Price</th><th>Stock</th><th>Images</th><th>Actions</th></tr></thead>
       <tbody>
         ${state.products.map(p=>{
           const cat = catById(p.categoryId);
@@ -1002,6 +1205,7 @@ function renderAdminProducts(){
             <td>${p.images&&p.images[0]?`<img src="${p.images[0]}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;">`:'—'}</td>
             <td>${esc(p.name)}</td>
             <td>${cat?esc(cat.name):'—'}</td>
+            <td>${p.isEbook?'📚 E-book':'📦 Physical'}</td>
             <td class="mono">${fmt(p.mrp)}</td>
             <td class="mono">${fmt(p.price)}</td>
             <td class="mono">${p.quantity==null?'Unlimited':(p.quantity>0?p.quantity:'<span style="color:var(--red); font-weight:600;">0 — Coming Soon</span>')}</td>
@@ -1011,7 +1215,7 @@ function renderAdminProducts(){
               <button class="btn btn-red" data-action="delete-product" data-id="${p.id}">Delete</button>
             </td>
           </tr>`;
-        }).join('') || `<tr><td colspan="8" style="text-align:center; color:var(--ink-soft);">Koi product nahi hai</td></tr>`}
+        }).join('') || `<tr><td colspan="9" style="text-align:center; color:var(--ink-soft);">Koi product nahi hai</td></tr>`}
       </tbody>
     </table></div>
   `;
@@ -1031,6 +1235,14 @@ function openProductForm(existing){
             <div class="field"><label>Discounted Price (₹)</label><input type="number" name="price" required min="0" value="${existing?existing.price:''}" /></div>
             <div class="field"><label>Stock Quantity <span style="color:var(--ink-soft); font-weight:400;">(khaali chhodo = unlimited)</span></label><input type="number" name="quantity" min="0" placeholder="e.g. 50" value="${existing&&existing.quantity!=null?existing.quantity:''}" /></div>
             <div class="field"><label>Badge (optional)</label><input name="badge" placeholder="Bestseller / New / Low Stock" value="${existing&&existing.badge?esc(existing.badge):''}" /></div>
+            <div class="field">
+              <label>Product Type *</label>
+              <select name="productType" required>
+                <option value="physical" ${!existing||!existing.isEbook?'selected':''}>📦 Physical item</option>
+                <option value="ebook" ${existing&&existing.isEbook?'selected':''}>📚 E-book (digital)</option>
+              </select>
+            </div>
+            <div class="field"><label>E-book access link <span style="color:var(--ink-soft); font-weight:400;">(only for e-books — opens when student clicks Access)</span></label><input name="ebookLink" type="url" placeholder="https://drive.google.com/..." value="${existing&&existing.ebookLink?esc(existing.ebookLink):''}" /></div>
           </div>
           <div class="field"><label>Long description</label><textarea name="longDescription" rows="4" required>${existing?esc(existing.longDescription||''):''}</textarea></div>
           <div class="field">
@@ -1098,7 +1310,7 @@ function renderAdminOrders(){
   return `
     <h3 style="margin-bottom:10px;">Purchases</h3>
     <div class="table-wrap" style="margin-bottom:26px;"><table>
-      <thead><tr><th>Name</th><th>Branch</th><th>Class</th><th>Batch</th><th>Phone</th><th>Email</th><th>Product</th><th>Price</th><th>Coupon</th><th>Final</th><th>Payment</th><th>Status</th><th>Date</th></tr></thead>
+      <thead><tr><th>Name</th><th>Branch</th><th>Class</th><th>Batch</th><th>Phone</th><th>Email</th><th>Product</th><th>Type</th><th>Price</th><th>Coupon</th><th>Final</th><th>Payment</th><th>UTR</th><th>Status</th><th>E-book Expiry</th><th>Date</th></tr></thead>
       <tbody>
         ${purchases.map(o=>`
           <tr>
@@ -1109,20 +1321,29 @@ function renderAdminOrders(){
             <td class="mono">${esc(o.phone||'—')}</td>
             <td>${esc(o.email||'—')}</td>
             <td>${esc(o.productName)}</td>
+            <td>${o.isEbook?'📚 E-book':'📦 Physical'}</td>
             <td class="mono">${fmt(o.price)}</td>
             <td>${o.couponCode?esc(o.couponCode):'—'}</td>
             <td class="mono">${fmt(o.finalPrice)}</td>
             <td>${esc(o.paymentMethod||'')}</td>
+            <td class="mono">${o.utr?esc(o.utr):'—'}</td>
             <td>
-              <select data-action="set-order-status" data-id="${o.id}" data-current="${o.status||'pending'}">
-                <option value="pending" ${o.status!=='delivered'&&o.status!=='cancelled'?'selected':''}>Pending</option>
+              <select data-action="set-order-status" data-id="${o.id}" data-current="${o.status||'pending'}" data-isebook="${o.isEbook?'1':'0'}">
+                <option value="pending" ${(!o.status||o.status==='pending')?'selected':''}>Pending</option>
+                <option value="paid" ${o.status==='paid'?'selected':''}>Paid</option>
                 <option value="delivered" ${o.status==='delivered'?'selected':''}>Delivered</option>
                 <option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option>
               </select>
             </td>
+            <td class="mono">
+              ${o.isEbook
+                ? `${o.ebookExpiresAt?new Date(o.ebookExpiresAt*1000).toLocaleDateString('en-IN'):'No expiry'}
+                   <button type="button" class="btn btn-outline" style="padding:3px 8px; font-size:10px; margin-top:4px;" data-action="set-ebook-expiry" data-id="${o.id}">Set</button>`
+                : '—'}
+            </td>
             <td class="mono">${o.createdAt?new Date(o.createdAt.seconds*1000).toLocaleDateString('en-IN'):'—'}</td>
           </tr>
-        `).join('') || `<tr><td colspan="13" style="text-align:center; color:var(--ink-soft);">Koi purchase nahi</td></tr>`}
+        `).join('') || `<tr><td colspan="16" style="text-align:center; color:var(--ink-soft);">Koi purchase nahi</td></tr>`}
       </tbody>
     </table></div>
 
@@ -1139,6 +1360,22 @@ function renderAdminOrders(){
         `).join('') || `<tr><td colspan="8" style="text-align:center; color:var(--ink-soft);">Koi registration nahi</td></tr>`}
       </tbody>
     </table></div>
+  `;
+}
+
+/* ---- Settings ---- */
+function renderAdminSettings(){
+  return `
+    <div class="admin-panel-head"><h3>Checkout Settings</h3></div>
+    <form data-form="settings-form" style="max-width:360px; display:flex; flex-direction:column; gap:12px;">
+      <div class="field">
+        <label>Extra / Convenience Fee (₹)</label>
+        <input type="number" name="extraFee" min="0" step="1" value="${state.extraFee||0}" placeholder="e.g. 20" />
+        <p style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Ye fixed amount har purchase checkout ke total payable mein automatically add hoga (subtotal ke baad, "Convenience Fee" line mein dikhega). 0 rakhne se koi extra fee nahi lagegi.</p>
+      </div>
+      <button type="submit" class="btn btn-navy" style="width:100%;">Save Settings</button>
+      <p id="settings-msg" style="font-size:12px;"></p>
+    </form>
   `;
 }
 
@@ -1175,6 +1412,57 @@ document.addEventListener('click', async (e)=>{
   else if(action==='close-cart'){ document.getElementById('cart-overlay').classList.remove('open'); document.getElementById('cart-drawer').classList.remove('open'); }
   else if(action==='set-checkout-type'){ state.checkoutType = el.dataset.type; state.appliedCoupon=null; render(); }
   else if(action==='apply-coupon'){ await handleApplyCoupon(); }
+  else if(action==='pay-upi'){
+    const formEl = el.closest('form');
+    if(formEl && !formEl.reportValidity()) return;
+    const subtotal = cartTotal();
+    const discAmt = state.appliedCoupon ? computeDiscount(state.appliedCoupon, subtotal) : 0;
+    const final = Math.max(0, subtotal - discAmt) + (state.extraFee||0);
+    if(final<=0){ toast('Payable amount ₹0 hai, UPI payment ki zaroorat nahi.'); return; }
+    const nameField = formEl ? formEl.querySelector('[name=name]') : null;
+    const payerName = (nameField && nameField.value.trim()) || 'Customer';
+    const note = 'Order Payment - ' + payerName;
+    const upiLink = 'upi://pay?pa='+encodeURIComponent(UPI_ID)
+      +'&pn='+encodeURIComponent(UPI_PAYEE_NAME)
+      +'&am='+encodeURIComponent(final)
+      +'&cu=INR'
+      +'&tn='+encodeURIComponent(note);
+    el.disabled = true;
+    /* Order place ho jaata hai turant (status: pending) — koi UTR poochna nahi hai.
+       Jaise hi user UPI app se wapas is tab par aayega, "please wait 2 hours" screen already ready milegi. */
+    const ok = await placeOrder(formEl, {status:'pending'});
+    if(ok){
+      document.getElementById('checkout-detail').innerHTML = renderWaitingVerification();
+      startVerifyTimer(2*60*60);
+    } else {
+      el.disabled = false;
+      return;
+    }
+    window.location.href = upiLink;
+  }
+  else if(action==='confirm-free-order'){
+    const formEl = el.closest('form');
+    if(formEl && !formEl.reportValidity()) return;
+    el.disabled = true; el.textContent = 'Processing...';
+    const ok = await placeOrder(formEl, {status:'pending'});
+    if(ok){
+      document.getElementById('checkout-detail').innerHTML = `<div class="success-box">
+        <div class="success-icon">🎉</div>
+        <h2 class="disp">It's yours — for free!</h2>
+        <p style="color:var(--ink-soft); font-size:13px;">Order confirm ho gaya. Agar isme e-book thi, to wo turant unlock ho gayi hai.</p>
+        <a href="ebooks.html" class="btn btn-green">📚 Go to My E-Books</a>
+        <a href="#/orders" class="btn btn-navy" style="margin-top:8px;">View My Orders</a>
+      </div>`;
+    } else {
+      el.disabled = false; el.textContent = '🎁 Get Order — FREE';
+    }
+  }
+  else if(action==='open-order-detail'){ openOrderDetailModal(el.dataset.id); }
+  else if(action==='access-ebook'){
+    const link = el.dataset.link;
+    if(link){ window.open(link, '_blank'); }
+    else{ toast('Is e-book ka access link abhi set nahi hua — support se contact karo'); }
+  }
   else if(action==='remove-coupon'){ state.appliedCoupon=null; render(); }
   else if(action==='admin-icon'){ if(state.isAdmin){ location.hash='#/admin'; } else { openAdminLoginModal(); } }
   else if(action==='admin-logout'){ state.isAdmin=false; sessionStorage.removeItem('sw_admin'); location.hash='#/'; }
@@ -1188,6 +1476,23 @@ document.addEventListener('click', async (e)=>{
   else if(action==='delete-product'){ if(confirm('Product delete karein?')) await deleteDoc(doc(db,'products',el.dataset.id)); }
   else if(action==='open-coupon-form'){ openCouponForm(); }
   else if(action==='delete-coupon'){ if(confirm('Coupon delete karein?')) await deleteDoc(doc(db,'coupons',el.dataset.id)); }
+  else if(action==='set-ebook-expiry'){
+    const o = state.allOrders.find(x=>x.id===el.dataset.id);
+    const current = o && o.ebookExpiresAt ? new Date(o.ebookExpiresAt*1000).toISOString().slice(0,10) : '';
+    const dateStr = prompt('E-book access expiry date (YYYY-MM-DD)? Khaali chhodo to remove expiry (unlimited access):', current);
+    if(dateStr===null) return;
+    try{
+      if(dateStr.trim()===''){
+        await updateDoc(doc(db,'orders', el.dataset.id), {ebookExpiresAt: null});
+        toast('Expiry removed');
+      } else {
+        const ts = Math.floor(new Date(dateStr+'T23:59:59').getTime()/1000);
+        if(isNaN(ts)){ toast('Invalid date'); return; }
+        await updateDoc(doc(db,'orders', el.dataset.id), {ebookExpiresAt: ts});
+        toast('Expiry updated');
+      }
+    }catch(err){ console.error(err); toast('Failed: '+(err.message||err.code||'unknown error')); }
+  }
   else if(action==='toggle-coupon'){
     const c = state.coupons.find(x=>x.id===el.dataset.id);
     await updateDoc(doc(db,'coupons',el.dataset.id), {active: !c.active});
@@ -1202,8 +1507,20 @@ document.addEventListener('change', async (e)=>{
   if(e.target.dataset.action==='set-order-status'){
     const sel = e.target;
     const prevValue = sel.dataset.current || 'pending';
+    const isEbook = sel.dataset.isebook === '1';
     try{
-      await updateDoc(doc(db,'orders', sel.dataset.id), {status: sel.value});
+      const updateData = {status: sel.value};
+      /* Marking an e-book order Delivered — ask admin for an expiry date.
+         Moving status away from Delivered (Pending/Cancelled) automatically revokes
+         access, since access is only granted while status === 'delivered'. */
+      if(sel.value==='delivered' && isEbook){
+        const dateStr = prompt('E-book access expiry date (YYYY-MM-DD)? Khaali chhodo for no expiry:');
+        if(dateStr){
+          const ts = Math.floor(new Date(dateStr+'T23:59:59').getTime()/1000);
+          if(!isNaN(ts)) updateData.ebookExpiresAt = ts;
+        }
+      }
+      await updateDoc(doc(db,'orders', sel.dataset.id), updateData);
       sel.dataset.current = sel.value;
       toast('Order status updated');
     }catch(err){ console.error(err); toast('Status update failed: '+(err.message||err.code||'unknown error')); sel.value = prevValue; }
@@ -1254,52 +1571,19 @@ document.addEventListener('submit', async (e)=>{
   /* ---- Purchase ---- */
   if(form.dataset.form==='purchase'){
     e.preventDefault();
-    const fd = new FormData(form);
-    const phone = fd.get('phone');
-    if(!/^\d{10}$/.test(phone)){ toast('Phone number 10 digit hona chahiye'); return; }
-    const studentDetails = {
-      name: fd.get('name'), branch: fd.get('branch'), className: fd.get('className'),
-      batch: fd.get('batch'), phone, email: fd.get('email'),
-    };
-    const items = Object.keys(state.cart).map(id=>({p: state.products.find(x=>x.id===id), qty: state.cart[id]})).filter(x=>x.p);
-    const subtotal = cartTotal();
-    const discAmt = state.appliedCoupon ? computeDiscount(state.appliedCoupon, subtotal) : 0;
-    const final = Math.max(0, subtotal - discAmt);
     const paymentMethod = form.pay.value;
-    if(paymentMethod === 'UPI' && !state.appliedCoupon){
-      toast('UPI se pay karne ke liye pehle ek valid coupon apply karo');
+    if(paymentMethod === 'UPI'){
+      toast('UPI ke liye upar "Pay via UPI" section use karo aur payment confirm karo.');
       return;
     }
-    const outOfStockItem = items.find(({p,qty})=> !inStock(p) || (p.quantity!=null && qty>p.quantity));
-    if(outOfStockItem){
-      toast(`${outOfStockItem.p.name} ab available nahi hai ya itni quantity nahi bachi. Cart update kar lo.`);
-      delete state.cart[outOfStockItem.p.id]; saveCart(); render();
-      return;
-    }
-    const btn = form.querySelector('button[type=submit]');
+    const btn = form.querySelector('#main-confirm-btn');
     btn.textContent = 'Processing...'; btn.disabled = true;
-    try{
-      for(const {p,qty} of items){
-        await addDoc(collection(db,'orders'), {
-          type:'purchase', uid: state.uid,
-          productId: p.id, productName: p.name, productImage: (p.images&&p.images[0])||'',
-          mrp: p.mrp, price: p.price*qty, qty,
-          ...studentDetails,
-          couponCode: state.appliedCoupon ? state.appliedCoupon.id : null,
-          discountAmount: items.length ? Math.round(discAmt/items.length) : 0,
-          finalPrice: items.length===1 ? final : Math.round((p.price*qty) - (discAmt * (p.price*qty/subtotal))),
-          paymentMethod, status:'pending', createdAt: serverTimestamp(),
-        });
-        if(p.quantity!=null){
-          await updateDoc(doc(db,'products', p.id), {quantity: increment(-qty)});
-        }
-      }
-      if(state.appliedCoupon){
-        await updateDoc(doc(db,'coupons', state.appliedCoupon.id), {usedCount: increment(1)});
-      }
-      state.cart = {}; saveCart(); state.appliedCoupon=null;
+    const ok = await placeOrder(form, {status:'pending'});
+    if(ok){
       document.getElementById('checkout-detail').innerHTML = renderSuccessBox('purchase');
-    }catch(err){ console.error(err); toast('Order failed, try again'); btn.disabled=false; btn.textContent='Confirm Purchase'; }
+    } else {
+      btn.disabled = false; btn.textContent = 'Confirm Purchase';
+    }
     return;
   }
 
@@ -1372,11 +1656,13 @@ document.addEventListener('submit', async (e)=>{
         }
       }
       const qtyVal = fd.get('quantity');
+      const isEbook = fd.get('productType')==='ebook';
       const data = {
         categoryId: fd.get('categoryId'), name: fd.get('name'),
         mrp: Number(fd.get('mrp')), price: Number(fd.get('price')),
         quantity: (qtyVal===''||qtyVal===null) ? null : Number(qtyVal),
         badge: fd.get('badge')||null, longDescription: fd.get('longDescription'),
+        isEbook, ebookLink: isEbook ? (fd.get('ebookLink')||null) : null,
       };
       if(imageUrls) data.images = imageUrls;
 
@@ -1404,12 +1690,72 @@ document.addEventListener('submit', async (e)=>{
     }catch(err){ console.error(err); toast('Failed to create coupon: '+(err.message||err.code||'unknown error')); }
     return;
   }
+
+  /* ---- Admin: checkout settings form ---- */
+  if(form.dataset.form==='settings-form'){
+    e.preventDefault();
+    const fd = new FormData(form);
+    const extraFee = Math.max(0, Number(fd.get('extraFee'))||0);
+    const msgEl = document.getElementById('settings-msg');
+    try{
+      await setDoc(doc(db,'settings','general'), {extraFee}, {merge:true});
+      if(msgEl){ msgEl.style.color='var(--green)'; msgEl.textContent='Saved!'; }
+      toast('Settings saved');
+    }catch(err){ console.error(err); if(msgEl){ msgEl.style.color='var(--red)'; msgEl.textContent='Failed: '+(err.message||err.code||'unknown error'); } }
+    return;
+  }
 });
 
 /* ---- search input ---- */
 document.addEventListener('input', (e)=>{
   if(e.target.id==='search-input'){ state.searchQuery = e.target.value; render(); document.getElementById('search-input').focus(); }
 });
+
+/* ---- payment method toggle (UPI panel vs classic Confirm button, no full re-render so form data stays intact) ---- */
+document.addEventListener('change', (e)=>{
+  if(e.target.name==='pay'){
+    const upiBlock = document.getElementById('upi-pay-block');
+    const mainBtn = document.getElementById('main-confirm-btn');
+    const isUpi = e.target.value==='UPI';
+    if(upiBlock) upiBlock.style.display = isUpi ? '' : 'none';
+    if(mainBtn) mainBtn.style.display = isUpi ? 'none' : '';
+  }
+});
+
+function renderWaitingVerification(){
+  return `<div class="success-box">
+    <div class="success-icon">⏳</div>
+    <h2 class="disp">Order Place Ho Gaya!</h2>
+    <p style="color:var(--ink-soft); font-size:13px;">Tumhara order "Pending" status mein hai. Admin manually payment verify karke ise "Paid" mark karega.</p>
+    <div class="verify-timer-box">
+      <p style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;">Estimated verification time</p>
+      <div id="verify-timer" class="mono" style="font-size:28px; font-weight:700; color:var(--gold-deep);">02:00:00</div>
+      <p id="verify-timer-note" style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Usually 2 ghante ke andar verify ho jaata hai.</p>
+    </div>
+    <p style="color:var(--ink-soft); font-size:13px;">📞 Urgent ho to seedha call karo: <a href="tel:${COACHING_PHONE}" style="color:var(--green); font-weight:600;">${COACHING_PHONE}</a></p>
+    <a href="#/orders" class="btn btn-navy">View My Orders</a>
+  </div>`;
+}
+
+function startVerifyTimer(totalSeconds){
+  let remaining = totalSeconds;
+  const iv = setInterval(()=>{
+    const el = document.getElementById('verify-timer');
+    if(!el){ clearInterval(iv); return; } // user navigated away
+    remaining--;
+    if(remaining<=0){
+      el.textContent = '00:00:00';
+      const note = document.getElementById('verify-timer-note');
+      if(note) note.textContent = 'Verification thoda time le raha hai — seedha coaching contact karo.';
+      clearInterval(iv);
+      return;
+    }
+    const h = String(Math.floor(remaining/3600)).padStart(2,'0');
+    const m = String(Math.floor((remaining%3600)/60)).padStart(2,'0');
+    const s = String(remaining%60).padStart(2,'0');
+    el.textContent = `${h}:${m}:${s}`;
+  }, 1000);
+}
 
 function renderSuccessBox(type){
   if(type==='purchase'){

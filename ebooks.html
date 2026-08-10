@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>My E-Books — Science World</title>
+<link rel="icon" href="logo.png" onerror="this.href=''" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Dancing+Script:wght@600;700&family=Poppins:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+  :root{
+    --bg:#FDF3EA; --card:rgba(255,253,246,.55); --card-2:rgba(255,253,246,.75);
+    --navy:#0A0E1A; --ink:#2A1B33; --ink-soft:#7A5E7A; --ink-dark:#1B1408;
+    --gold:#C9781E; --gold-soft:#E8A23A; --gold-deep:#9A5A12;
+    --green:#0E8A5C; --red:#D42B5C; --line:rgba(201,80,150,.22);
+    --violet:#7A3AC9; --pink:#E5497C; --glass-blur:18px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background:
+      radial-gradient(1000px 480px at 12% -6%, rgba(169,130,46,.20), transparent 60%),
+      radial-gradient(820px 460px at 100% 4%, rgba(14,107,75,.14), transparent 55%),
+      radial-gradient(760px 520px at 50% 100%, rgba(156,43,61,.10), transparent 55%),
+      var(--bg);
+    background-attachment:fixed;
+    font-family:'Poppins',sans-serif; font-weight:500; color:var(--ink); min-height:100vh;
+  }
+  a{color:inherit; text-decoration:none;}
+  button{font-family:inherit; cursor:pointer; border:none; background:none;}
+  .disp{font-family:'Playfair Display',serif; font-weight:800; letter-spacing:.01em;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+
+  header{
+    position:sticky; top:0; z-index:30;
+    background:rgba(255,253,246,.62); backdrop-filter:blur(var(--glass-blur)) saturate(160%); -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(160%);
+    border-bottom:1px solid var(--gold);
+    box-shadow:0 1px 0 rgba(255,255,255,.7), 0 10px 26px -18px rgba(124,90,30,.5);
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px;
+    padding:13px 20px;
+  }
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand img, .brand .logo-fallback{width:34px; height:34px; border-radius:9px; box-shadow:0 0 0 1px rgba(212,175,55,.5);}
+  .brand .logo-fallback{background:linear-gradient(135deg,var(--gold-soft),var(--gold-deep)); display:flex; align-items:center; justify-content:center; font-size:16px;}
+  .brand span{font-family:'Dancing Script',cursive; font-weight:700; font-size:24px; background:linear-gradient(90deg, var(--gold), var(--pink), var(--violet)); -webkit-background-clip:text; background-clip:text; color:transparent;}
+  .back-link{color:var(--ink-soft); font-size:12.5px;}
+  .back-link:hover{color:var(--gold-soft);}
+
+  .wrap{max-width:1000px; margin:0 auto; padding:32px 20px 60px;}
+  .wrap h1{font-size:24px; margin-bottom:6px;}
+  .wrap .sub{color:var(--ink-soft); font-size:13px; margin-bottom:24px;}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:18px;}
+  .card{background:var(--card); backdrop-filter:blur(var(--glass-blur)) saturate(160%); -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(160%); border:1px solid var(--line); border-radius:14px; overflow:hidden; display:flex; flex-direction:column; transition:transform .18s, box-shadow .18s, border-color .18s;}
+  .card:hover{transform:translateY(-4px); border-color:var(--gold); box-shadow:0 18px 36px -16px rgba(124,90,30,.4);}
+  .card .cover{height:150px; background:var(--card-2); display:flex; align-items:center; justify-content:center; overflow:hidden;}
+  .card .cover img{width:100%; height:100%; object-fit:cover;}
+  .card .body{padding:14px; display:flex; flex-direction:column; gap:8px; flex:1;}
+  .card .title{font-size:13.5px; font-weight:600; line-height:1.35; color:var(--ink);}
+  .card small{color:var(--ink-soft); font-size:11px;}
+  .card.expired{opacity:.6;}
+  .btn{border-radius:9px; padding:10px 14px; font-size:12.5px; font-weight:600; text-align:center; display:block;}
+  .btn-green{background:linear-gradient(135deg,var(--green),#12A36C); color:#fff;}
+  .btn-outline{border:1px solid var(--line); color:var(--ink);}
+
+  .empty{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:36px 20px; text-align:center; color:var(--ink-soft); font-size:13.5px;}
+  .empty a{color:var(--green); font-weight:600;}
+
+  .loading{text-align:center; padding:60px 0; color:var(--ink-soft); font-size:13px; font-family:'IBM Plex Mono',monospace;}
+
+  .support-fab{position:fixed; bottom:20px; right:20px; background:linear-gradient(135deg,#25D366,#128C7E); color:#fff; border-radius:30px; padding:12px 18px; font-size:13px; font-weight:600; box-shadow:0 10px 26px -10px rgba(18,140,110,.6); display:flex; align-items:center; gap:8px; z-index:20;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <img src="logo.png" alt="logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+    <div class="logo-fallback" style="display:none;">🧪</div>
+    <span>Science World</span>
+  </div>
+  <a href="index.html" class="back-link">← Back to Shop</a>
+</header>
+
+<div class="wrap">
+  <h1 class="disp">📚 My E-Books</h1>
+  <p class="sub">Yahan tumhare purchase kiye hue ya free unlock hue e-books ka access milega.</p>
+  <div id="root"><div class="loading">Loading your e-books…</div></div>
+</div>
+
+<a class="support-fab" href="#" id="support-btn">💬 Support</a>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+/* Same Firebase project as the shop (index.html) — because it's the same origin,
+   the visitor's anonymous login session is shared automatically, so whatever
+   identity they're logged in with on the shop is the same identity used here. */
+const firebaseConfig = {
+  apiKey: "AIzaSyCDsPKTfJQJ0QOUI1xfJ4bQm5ux6EKNNno",
+  authDomain: "shop-4ca21.firebaseapp.com",
+  projectId: "shop-4ca21",
+  messagingSenderId: "281794729728",
+  appId: "1:281794729728:web:98fa990a2d30eff4cf85e5",
+  measurementId: "G-RJPHL2CNYP"
+};
+const WHATSAPP_NUMBER = "917654137037";
+function whatsappLink(msg){ return 'https://wa.me/'+WHATSAPP_NUMBER+(msg?('?text='+encodeURIComponent(msg)):''); }
+document.getElementById('support-btn').addEventListener('click', (e)=>{
+  e.preventDefault();
+  window.open(whatsappLink('Hi, I need help accessing my e-book.'), '_blank');
+});
+
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+const db = getFirestore(fbApp);
+
+function esc(s){ const d=document.createElement('div'); d.innerText = s ?? ''; return d.innerHTML; }
+
+function render(orders){
+  const root = document.getElementById('root');
+  const now = Date.now()/1000;
+  const unlocked = orders.filter(o=> !o.ebookExpiresAt || o.ebookExpiresAt > now);
+  const expired = orders.filter(o=> o.ebookExpiresAt && o.ebookExpiresAt <= now);
+
+  if(unlocked.length===0 && expired.length===0){
+    root.innerHTML = `<div class="empty">Abhi tak koi e-book unlock nahi hui.<br/><a href="index.html">Shop se e-book purchase karo →</a></div>`;
+    return;
+  }
+
+  root.innerHTML = `<div class="grid">
+    ${unlocked.map(o=>`
+      <div class="card">
+        <div class="cover">${o.productImage ? `<img src="${o.productImage}" onerror="this.style.display='none'"/>` : '📖'}</div>
+        <div class="body">
+          <div class="title">${esc(o.productName||'')}</div>
+          ${o.ebookExpiresAt ? `<small>Access until ${new Date(o.ebookExpiresAt*1000).toLocaleDateString('en-IN')}</small>` : `<small>Lifetime access</small>`}
+          <button type="button" class="btn btn-green" data-link="${o.ebookLink?esc(o.ebookLink):''}">🔓 Access</button>
+        </div>
+      </div>
+    `).join('')}
+    ${expired.map(o=>`
+      <div class="card expired">
+        <div class="cover">${o.productImage ? `<img src="${o.productImage}" onerror="this.style.display='none'"/>` : '📖'}</div>
+        <div class="body">
+          <div class="title">${esc(o.productName||'')}</div>
+          <small style="color:var(--red);">Access expired</small>
+          <button type="button" class="btn btn-outline" data-renew="${esc(o.productName||'')}">💬 Renew via Support</button>
+        </div>
+      </div>
+    `).join('')}
+  </div>`;
+
+  root.querySelectorAll('[data-link]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const link = btn.dataset.link;
+      if(link) window.open(link, '_blank');
+      else alert('Is e-book ka access link abhi set nahi hua — Support par contact karo.');
+    });
+  });
+  root.querySelectorAll('[data-renew]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      window.open(whatsappLink('Hi, my e-book access has expired, please renew: '+btn.dataset.renew), '_blank');
+    });
+  });
+}
+
+let unsub = null;
+onAuthStateChanged(auth, (user)=>{
+  if(!user) return;
+  if(unsub) unsub();
+  unsub = onSnapshot(
+    query(collection(db,'orders'), where('uid','==', user.uid), where('isEbook','==', true), where('status','==','delivered')),
+    snap=>{
+      const orders = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      render(orders);
+    },
+    err=>{
+      console.error(err);
+      document.getElementById('root').innerHTML = `<div class="empty">Load nahi ho paya — thodi der baad try karo.</div>`;
+    }
+  );
+});
+signInAnonymously(auth).catch(err=>{
+  console.error('Auth error', err);
+  document.getElementById('root').innerHTML = `<div class="empty">Login fail ho gaya, page refresh karo.</div>`;
+});
+</script>
+</body>
+</html>
