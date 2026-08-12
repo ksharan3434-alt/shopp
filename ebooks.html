@@ -170,10 +170,15 @@ let unsub = null;
 onAuthStateChanged(auth, (user)=>{
   if(!user) return;
   if(unsub) unsub();
+  /* Only filter by uid here (single where() — no composite index needed).
+     isEbook / status filtering happens in JS below so EVERY unlocked e-book
+     a student has bought shows up, not just one. */
   unsub = onSnapshot(
-    query(collection(db,'orders'), where('uid','==', user.uid), where('isEbook','==', true), where('status','==','delivered')),
+    query(collection(db,'orders'), where('uid','==', user.uid)),
     snap=>{
-      const orders = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      const orders = snap.docs
+        .map(d=>({id:d.id, ...d.data()}))
+        .filter(o=> o.isEbook && o.status==='delivered');
       render(orders);
     },
     err=>{
