@@ -1507,19 +1507,14 @@ document.addEventListener('change', async (e)=>{
   if(e.target.dataset.action==='set-order-status'){
     const sel = e.target;
     const prevValue = sel.dataset.current || 'pending';
-    const isEbook = sel.dataset.isebook === '1';
     try{
       const updateData = {status: sel.value};
-      /* Marking an e-book order Delivered — ask admin for an expiry date.
-         Moving status away from Delivered (Pending/Cancelled) automatically revokes
-         access, since access is only granted while status === 'delivered'. */
-      if(sel.value==='delivered' && isEbook){
-        const dateStr = prompt('E-book access expiry date (YYYY-MM-DD)? Khaali chhodo for no expiry:');
-        if(dateStr){
-          const ts = Math.floor(new Date(dateStr+'T23:59:59').getTime()/1000);
-          if(!isNaN(ts)) updateData.ebookExpiresAt = ts;
-        }
-      }
+      /* Note: e-book expiry is no longer set here via a blocking prompt() —
+         that popup could silently fail/get blocked, which meant this whole
+         updateDoc() never ran and the order stayed "pending" even though the
+         dropdown showed "Delivered". Marking Delivered now always goes through
+         immediately (lifetime access by default); use the "Set" button in the
+         E-book Expiry column afterwards if you want to add an expiry date. */
       await updateDoc(doc(db,'orders', sel.dataset.id), updateData);
       sel.dataset.current = sel.value;
       toast('Order status updated');
